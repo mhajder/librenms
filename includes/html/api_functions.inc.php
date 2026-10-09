@@ -228,8 +228,16 @@ function get_port_stats_by_port_hostname(Illuminate\Http\Request $request)
 
     // This will return port stats based on a devices hostname and ifName
     $hostname = $request->route('hostname');
-    $device_id = ctype_digit($hostname) ? $hostname : getidbyname($hostname);
+    $device = DeviceCache::get($hostname);
+    if (! $device->exists) {
+        return api_error(404, "Device $hostname does not exist");
+    }
+    $device_id = $device->device_id;
     $port = dbFetchRow('SELECT * FROM `ports` WHERE `device_id`=? AND `ifName`=? AND `deleted` = 0', [$device_id, $ifName]);
+    if (empty($port)) {
+        // only tell users who may see the device that the port is missing
+        return check_device_permission($device_id, fn () => api_error(404, "Port $ifName does not exist on device $hostname"));
+    }
 
     return check_port_permission($port['port_id'], $device_id, function () use ($request, $port) {
         $in_rate = $port['ifInOctets_rate'] * 8;
@@ -563,9 +571,12 @@ function device_availability(Illuminate\Http\Request $request)
         return api_error(400, 'No hostname has been provided to get availability');
     }
 
-    $device_id = ctype_digit($hostname) ? $hostname : getidbyname($hostname);
+    $device = DeviceCache::get($hostname);
+    if (! $device->exists) {
+        return api_error(404, "Device $hostname does not exist");
+    }
 
-    return check_device_permission($device_id, function ($device_id) {
+    return check_device_permission($device->device_id, function ($device_id) {
         $availabilities = Availability::select('duration', 'availability_perc')
                       ->where('device_id', '=', $device_id)
                       ->orderBy('duration', 'ASC');
@@ -584,9 +595,12 @@ function device_outages(Illuminate\Http\Request $request)
         return api_error(400, 'No hostname has been provided to get availability');
     }
 
-    $device_id = ctype_digit($hostname) ? $hostname : getidbyname($hostname);
+    $device = DeviceCache::get($hostname);
+    if (! $device->exists) {
+        return api_error(404, "Device $hostname does not exist");
+    }
 
-    return check_device_permission($device_id, function ($device_id) {
+    return check_device_permission($device->device_id, function ($device_id) {
         $outages = DeviceOutage::select(['going_down', 'up_again'])
                    ->where('device_id', '=', $device_id)
                    ->orderBy('going_down', 'DESC');
@@ -938,10 +952,12 @@ function get_graphs(Illuminate\Http\Request $request)
 {
     $hostname = $request->route('hostname');
 
-    // use hostname as device_id if it's all digits
-    $device_id = ctype_digit($hostname) ? $hostname : getidbyname($hostname);
+    $device = DeviceCache::get($hostname);
+    if (! $device->exists) {
+        return api_error(404, "Device $hostname does not exist");
+    }
 
-    return check_device_permission($device_id, function ($device_id) {
+    return check_device_permission($device->device_id, function ($device_id) {
         $graphs = [];
         $graphs[] = [
             'desc' => 'Poller Time',
@@ -986,7 +1002,11 @@ function trigger_device_discovery(Illuminate\Http\Request $request)
 
 function list_available_health_graphs(Illuminate\Http\Request $request)
 {
-    $device = DeviceCache::get($request->route('hostname'));
+    $hostname = $request->route('hostname');
+    $device = DeviceCache::get($hostname);
+    if (! $device->exists) {
+        return api_error(404, "Device $hostname does not exist");
+    }
 
     return check_device_permission($device->device_id, function () use ($request, $device) {
         $input_type = $request->route('type');
@@ -1372,6 +1392,9 @@ function get_port_security(Illuminate\Http\Request $request)
         });
     } elseif ($hostname) {
         $device = DeviceCache::get($hostname);
+        if (! $device->exists) {
+            return api_error(404, "Device $hostname does not exist");
+        }
 
         return check_device_permission($device->device_id, function () use ($device) {
             $port = PortSecurity::where('device_id', $device->device_id)->get()->toArray();
@@ -2066,10 +2089,12 @@ function unmute_alert(Illuminate\Http\Request $request)
 function get_inventory(Illuminate\Http\Request $request)
 {
     $hostname = $request->route('hostname');
-    // use hostname as device_id if it's all digits
-    $device_id = ctype_digit($hostname) ? $hostname : getidbyname($hostname);
+    $device = DeviceCache::get($hostname);
+    if (! $device->exists) {
+        return api_error(404, "Device $hostname does not exist");
+    }
 
-    return check_device_permission($device_id, function ($device_id) use ($request) {
+    return check_device_permission($device->device_id, function ($device_id) use ($request) {
         $sql = '';
         $params = [];
         if ($request->input('entPhysicalClass')) {
@@ -2084,9 +2109,6 @@ function get_inventory(Illuminate\Http\Request $request)
             $sql .= ' AND entPhysicalContainedIn="0"';
         }
 
-        if (! is_numeric($device_id)) {
-            return api_error(400, 'Invalid device provided');
-        }
         $sql .= ' AND `device_id`=?';
         $params[] = $device_id;
         $inventory = dbFetchRows("SELECT * FROM `entPhysical` WHERE 1 $sql", $params);
@@ -2098,10 +2120,12 @@ function get_inventory(Illuminate\Http\Request $request)
 function get_inventory_for_device(Illuminate\Http\Request $request)
 {
     $hostname = $request->route('hostname');
-    // use hostname as device_id if it's all digits
-    $device_id = ctype_digit($hostname) ? $hostname : getidbyname($hostname);
+    $device = DeviceCache::get($hostname);
+    if (! $device->exists) {
+        return api_error(404, "Device $hostname does not exist");
+    }
 
-    return check_device_permission($device_id, function ($device_id) {
+    return check_device_permission($device->device_id, function ($device_id) {
         $params = [];
         $sql = 'SELECT * FROM `entPhysical` WHERE device_id = ?';
         $params[] = $device_id;
@@ -3471,9 +3495,15 @@ function list_arp(Illuminate\Http\Request $request)
     }
 
     if ($query === 'all') {
-        $arp = $request->has('device')
-            ? \DeviceCache::get($hostname)->macs
-            : Ipv4Mac::all();
+        if ($request->has('device')) {
+            $device = DeviceCache::get($hostname);
+            if (! $device->exists) {
+                return api_error(404, "Device $hostname does not exist");
+            }
+            $arp = $device->macs;
+        } else {
+            $arp = Ipv4Mac::all();
+        }
     } elseif ($cidr) {
         try {
             $ip = new IPv4("$query/$cidr");
