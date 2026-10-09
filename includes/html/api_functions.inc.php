@@ -1243,6 +1243,10 @@ function get_port_info(Illuminate\Http\Request $request)
                     ->when(in_array($with, $allowed), fn ($q) => $q->with($with))
                     ->get();
 
+        if ($port->isEmpty()) {
+            return api_error(404, "Port $port_id does not exist");
+        }
+
         return api_success($port, 'port');
     });
 }
@@ -1422,6 +1426,10 @@ function list_alert_rules(Illuminate\Http\Request $request)
         ])->get()
     );
 
+    if ($id !== null && $rules->isEmpty()) {
+        return api_error(404, "Alert rule $id does not exist");
+    }
+
     return api_success($rules->toArray($request), 'rules');
 }
 
@@ -1431,6 +1439,10 @@ function list_alert_templates(Illuminate\Http\Request $request)
 
     $templates = AlertTemplate::when($id, fn ($query) => $query->where('id', $id))
         ->with('alert_rules')->select(['id', 'name', 'template', 'title', 'title_rec'])->get();
+
+    if ($id !== null && $templates->isEmpty()) {
+        return api_error(404, "Alert template $id does not exist");
+    }
 
     return api_success($templates->toArray($request), 'alert_templates');
 }
@@ -1554,6 +1566,9 @@ function add_edit_alert_template(Illuminate\Http\Request $request)
 function list_alerts(Illuminate\Http\Request $request): JsonResponse
 {
     $id = $request->route('id');
+    if ($id !== null && ! ctype_digit((string) $id)) {
+        return api_error(400, 'Invalid alert ID');
+    }
 
     $sql = 'SELECT `D`.`hostname`, `A`.*, `R`.`severity`,`R`.`name`,`R`.`proc`,`R`.`notes` FROM `alert_faults` AS `A`, `devices` AS `D`, `alert_rules` AS `R` WHERE `D`.`device_id` = `A`.`device_id` AND `A`.`rule_id` = `R`.`id` ';
     $sql .= 'AND `A`.`state` IN ';
@@ -1597,6 +1612,10 @@ function list_alerts(Illuminate\Http\Request $request): JsonResponse
     $sql .= ' ORDER BY A.' . $order;
 
     $alerts = dbFetchRows($sql, $param);
+    // an existing alert outside the requested states is an empty result, not a missing alert
+    if ($id !== null && empty($alerts) && ! AlertFault::query()->whereKey($id)->exists()) {
+        return api_error(404, "Alert $id does not exist");
+    }
     foreach ($alerts as $index => $alert) {
         $details = $alert['details'] ?? null;
         if (is_string($details) && $details !== '') {
@@ -1989,7 +2008,7 @@ function ack_alert(Illuminate\Http\Request $request)
 
     $fault = AlertFault::query()->find($fault_id);
     if ($fault === null) {
-        return api_success_noresult(200, 'No Alert by that ID');
+        return api_error(404, "Alert $fault_id does not exist");
     }
 
     $targets = api_alert_fault_action_targets((int) $fault->id, (int) $fault->device_id, (int) $fault->rule_id);
@@ -2033,7 +2052,7 @@ function unmute_alert(Illuminate\Http\Request $request)
 
     $fault = AlertFault::query()->find($fault_id);
     if ($fault === null) {
-        return api_success_noresult(200, 'No alert by that ID');
+        return api_error(404, "Alert $fault_id does not exist");
     }
 
     $targets = api_alert_fault_action_targets((int) $fault->id, (int) $fault->device_id, (int) $fault->rule_id);
@@ -2220,6 +2239,11 @@ function list_bills(Illuminate\Http\Request $request)
     $period = $request->input('period');
     $param = [];
     $sql = '';
+    $by_id = false;
+
+    if ($bill_id !== null && ! ctype_digit((string) $bill_id)) {
+        return api_error(400, 'Invalid bill ID');
+    }
 
     if (! empty($bill_custid)) {
         $sql .= '`bill_custid` = ?';
@@ -2230,6 +2254,7 @@ function list_bills(Illuminate\Http\Request $request)
     } elseif (is_numeric($bill_id)) {
         $sql .= '`bill_id` = ?';
         $param[] = $bill_id;
+        $by_id = true;
     } else {
         $sql = '1';
     }
@@ -2292,6 +2317,11 @@ function list_bills(Illuminate\Http\Request $request)
         $bill['ports'] = dbFetchRows('SELECT `D`.`device_id`,`P`.`port_id`,`P`.`ifName` FROM `bill_ports` AS `B`, `ports` AS `P`, `devices` AS `D` WHERE `B`.`bill_id` = ? AND `P`.`port_id` = `B`.`port_id` AND `D`.`device_id` = `P`.`device_id`', [$bill['bill_id']]);
 
         $bills[] = $bill;
+    }
+
+    // period=previous only lists bills with history, so an empty result there does not mean the bill is missing
+    if ($by_id && empty($bills) && $period !== 'previous') {
+        return api_error(404, "Bill $bill_id does not exist");
     }
 
     return api_success($bills, 'bills');
