@@ -47,8 +47,8 @@ Search for ports matching the query.
 
 Route: `/api/v0/ports/search/:field/:search`
 
-- field: comma separated list of field(s) to search
-- search: string to search in fields
+- field: comma separated list of field(s) to search. Optional: `/api/v0/ports/search/:search` searches ifAlias, ifDescr and ifName
+- search: string to search in fields, a `/` in it is sent as `%2F` (`Ethernet1%2F1`)
 
 Input:
 

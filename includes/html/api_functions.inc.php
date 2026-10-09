@@ -1312,8 +1312,16 @@ function search_ports(Illuminate\Http\Request $request): JsonResponse
     $field = $request->route('field');
     $search = $request->route('search');
 
-    // if only field is set, swap values
-    if (empty($search)) {
+    // %2F is decoded before routing, so a search without a field that contains '/'
+    // (ports/search/Ethernet1%2F1) arrives split into field "Ethernet1" and search "1";
+    // the raw path still has it as a single segment
+    $raw = Str::after($request->path(), 'ports/search/');
+    if ($search !== null && ! str_contains($raw, '/')) {
+        [$field, $search] = [null, rawurldecode($raw)];
+    }
+
+    // if only field is set, swap values ('0' is a valid search)
+    if ($search === null || $search === '') {
         [$field, $search] = [$search, $field];
     }
     $fields = validate_column_list($field, 'ports', ['ifAlias', 'ifDescr', 'ifName']);
